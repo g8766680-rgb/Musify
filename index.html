@@ -1832,8 +1832,6 @@ function addSwipeToQueue(row, swipeBg, track) {
 }
 
 // ── QUEUE ──
-let queue = []; // array of track ids in order
-
 function addToQueue(trackId) {
   if (queue.includes(trackId)) {
     toast('▶️ Già in coda!');
