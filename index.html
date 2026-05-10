@@ -360,14 +360,37 @@ body {
 /* ── TRACK ROW ── */
 .track-list { display: flex; flex-direction: column; gap: 2px; }
 
+/* ── SWIPE TO QUEUE ── */
+.track-row-wrap {
+  position: relative;
+  overflow: hidden;
+  border-radius: 12px;
+  margin-bottom: 2px;
+}
+.swipe-bg {
+  position: absolute; inset: 0;
+  background: linear-gradient(90deg, rgba(103,232,249,0.3), rgba(103,232,249,0.05));
+  display: flex; align-items: center;
+  padding-left: 18px; gap: 8px;
+  border-radius: 12px;
+  opacity: 0; pointer-events: none;
+}
+.swipe-bg .swipe-label { font-size: 0.7rem; font-weight: 700; color: #67e8f9; opacity: 0; transition: opacity 0.15s; }
+.swipe-bg.visible { opacity: 1; }
+.swipe-bg.visible .swipe-label { opacity: 1; }
+.swipe-bg.confirmed { background: linear-gradient(90deg, rgba(103,232,249,0.55), rgba(103,232,249,0.1)); }
+
 .track-row {
   display: flex; align-items: center; gap: 12px;
   padding: 10px 12px;
   border-radius: 12px;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.15s, transform 0.25s cubic-bezier(0.4,0,0.2,1);
   position: relative;
+  background: var(--bg);
+  will-change: transform;
 }
+.track-row.swiping { transition: background 0.15s; }
 .track-row:hover, .track-row:active { background: var(--surface); }
 .track-row.playing { background: var(--lilla-dim); }
 
@@ -1094,6 +1117,11 @@ body.theme-amoled {
         <span class="si-label">Preferiti</span>
       </div>
 
+      <div class="sidebar-item" data-page="queue" onclick="goPage('queue',this)">
+        <span class="si-icon">▶️</span>
+        <span class="si-label">Coda</span>
+      </div>
+
       <div class="sidebar-divider"></div>
 
       <!-- Folders -->
@@ -1192,6 +1220,31 @@ body.theme-amoled {
             <div class="es-icon">❤️</div>
             <div class="es-title">Nessun preferito</div>
             <div class="es-sub">Tocca il cuore accanto a un brano<br>per aggiungerlo qui</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- QUEUE PAGE -->
+      <div class="page" id="page-queue">
+        <div class="page-header">
+          <div>
+            <div class="header-greeting">Prossimi brani</div>
+            <div class="header-title">Coda ▶️</div>
+          </div>
+          <div class="header-right">
+            <button class="scan-btn" onclick="clearQueue()" title="Svuota coda" style="font-size:0.8rem; background: rgba(255,100,100,0.3);">🗑</button>
+          </div>
+        </div>
+        <div class="scroll-area">
+          <div class="liked-pill" style="background:linear-gradient(135deg,rgba(100,200,255,0.15),rgba(155,114,207,0.15)); border-color:rgba(100,200,255,0.3)">
+            <span class="lp-icon">▶️</span>
+            <span class="lp-text" id="queueCount" style="color:#67e8f9">0 brani</span>
+          </div>
+          <div class="track-list" id="queueTrackList"></div>
+          <div class="empty-state" id="queueEmpty">
+            <div class="es-icon">▶️</div>
+            <div class="es-title">Coda vuota</div>
+            <div class="es-sub">Scorri un brano verso destra per aggiungerlo alla coda</div>
           </div>
         </div>
       </div>
@@ -1333,12 +1386,13 @@ let currentPage = 'home';
 let currentFolderPage = null;
 let recentlyPlayed = [];  // track ids
 let scanTargetFolder = null; // folder id when scanning into folder
+let queue = []; // track ids in queue order
 
 const audio = document.getElementById('audioEl');
 
 // ── PERSIST ──
 function save() {
-  const data = { userName, userColorPrimary, userColorBright, userTheme, folders, tracks: allTracks.map(t=>({...t, url:undefined})), liked: allTracks.filter(t=>t.liked).map(t=>t.id), recent: recentlyPlayed };
+  const data = { userName, userColorPrimary, userColorBright, userTheme, folders, tracks: allTracks.map(t=>({...t, url:undefined})), liked: allTracks.filter(t=>t.liked).map(t=>t.id), recent: recentlyPlayed, queue };
   try { localStorage.setItem('musify_data', JSON.stringify(data)); } catch(e){}
 }
 
@@ -1354,6 +1408,7 @@ function load() {
     folders = data.folders || [];
     allTracks = (data.tracks||[]).map(t=>({...t, url: null}));
     recentlyPlayed = data.recent || [];
+    queue = data.queue || [];
   } catch(e){}
 }
 
@@ -1424,6 +1479,7 @@ function init() {
   renderHome();
   renderLiked();
   setupAudio();
+  renderQueue();
 }
 
 function updateGreeting() {
@@ -1520,6 +1576,7 @@ function logoutUser() {
   folders = [];
   currentTrackIndex = -1;
   recentlyPlayed = [];
+  queue = [];
   userColorPrimary = '#9b72cf';
   userColorBright = '#c084fc';
   userTheme = 'dark';
@@ -1682,6 +1739,17 @@ function renderTrackList(container, tracks, context) {
     const globalIdx = allTracks.indexOf(t);
     const isActive = globalIdx === currentTrackIndex;
     const extClass = ['mp3','flac','wav','aac'].includes(t.ext) ? `ext-${t.ext}` : 'ext-other';
+    const inQueue = queue.includes(t.id);
+
+    // Wrapper for swipe
+    const wrap = document.createElement('div');
+    wrap.className = 'track-row-wrap';
+
+    // Swipe background
+    const swipeBg = document.createElement('div');
+    swipeBg.className = 'swipe-bg';
+    swipeBg.innerHTML = `<span style="font-size:1.3rem">${inQueue ? '✅' : '▶️'}</span><span class="swipe-label">${inQueue ? 'Già in coda' : 'Aggiungi alla coda'}</span>`;
+    wrap.appendChild(swipeBg);
 
     const row = document.createElement('div');
     row.className = `track-row${isActive ? ' playing' : ''}`;
@@ -1702,7 +1770,138 @@ function renderTrackList(container, tracks, context) {
         <span class="track-ext ${extClass}">${t.ext}</span>
       </div>`;
     row.addEventListener('click', () => playTrack(globalIdx));
-    container.appendChild(row);
+
+    // ── SWIPE TO QUEUE ──
+    addSwipeToQueue(row, swipeBg, t);
+
+    wrap.appendChild(row);
+    container.appendChild(wrap);
+  });
+}
+
+// ── SWIPE GESTURE ──
+function addSwipeToQueue(row, swipeBg, track) {
+  let startX = 0, startY = 0, currentX = 0;
+  let isSwiping = false;
+  const THRESHOLD = 90;
+
+  function onStart(e) {
+    const touch = e.touches ? e.touches[0] : e;
+    startX = touch.clientX;
+    startY = touch.clientY;
+    currentX = 0;
+    isSwiping = false;
+  }
+
+  function onMove(e) {
+    const touch = e.touches ? e.touches[0] : e;
+    const dx = touch.clientX - startX;
+    const dy = touch.clientY - startY;
+
+    // Only horizontal swipe right
+    if (!isSwiping && Math.abs(dy) > Math.abs(dx)) return;
+    if (dx < 0) return; // only right
+
+    isSwiping = true;
+    e.preventDefault();
+    currentX = dx;
+
+    const progress = Math.min(dx / THRESHOLD, 1);
+    row.classList.add('swiping');
+    row.style.transform = `translateX(${Math.min(dx * 0.6, THRESHOLD * 0.6)}px)`;
+    swipeBg.classList.toggle('visible', dx > 20);
+    swipeBg.classList.toggle('confirmed', dx >= THRESHOLD);
+  }
+
+  function onEnd() {
+    if (!isSwiping) return;
+    row.classList.remove('swiping');
+    row.style.transform = '';
+    swipeBg.classList.remove('visible', 'confirmed');
+
+    if (currentX >= THRESHOLD) {
+      addToQueue(track.id);
+    }
+    isSwiping = false;
+    currentX = 0;
+  }
+
+  row.addEventListener('touchstart', onStart, { passive: true });
+  row.addEventListener('touchmove', onMove, { passive: false });
+  row.addEventListener('touchend', onEnd);
+}
+
+// ── QUEUE ──
+let queue = []; // array of track ids in order
+
+function addToQueue(trackId) {
+  if (queue.includes(trackId)) {
+    toast('▶️ Già in coda!');
+    return;
+  }
+  queue.push(trackId);
+  save();
+  renderQueue();
+  renderAll(); renderHome(); renderLiked();
+  if (currentFolderPage) renderFolderPage(currentFolderPage);
+  const t = allTracks.find(t => t.id === trackId);
+  toast(`▶️ "${t?.name}" aggiunto alla coda`);
+}
+
+function removeFromQueue(trackId) {
+  queue = queue.filter(id => id !== trackId);
+  save();
+  renderQueue();
+  renderAll(); renderHome(); renderLiked();
+  if (currentFolderPage) renderFolderPage(currentFolderPage);
+}
+
+function clearQueue() {
+  if (queue.length === 0) { toast('La coda è già vuota'); return; }
+  queue = [];
+  save();
+  renderQueue();
+  toast('🗑 Coda svuotata');
+}
+
+function renderQueue() {
+  const queueTracks = queue.map(id => allTracks.find(t => t.id === id)).filter(Boolean);
+  document.getElementById('queueCount').textContent = `${queueTracks.length} bran${queueTracks.length === 1 ? 'o' : 'i'}`;
+  const list = document.getElementById('queueTrackList');
+  const empty = document.getElementById('queueEmpty');
+
+  if (queueTracks.length === 0) {
+    list.innerHTML = '';
+    empty.style.display = '';
+    return;
+  }
+  empty.style.display = 'none';
+
+  // Render queue with remove button
+  list.innerHTML = '';
+  queueTracks.forEach((t, i) => {
+    const globalIdx = allTracks.indexOf(t);
+    const isActive = globalIdx === currentTrackIndex;
+    const extClass = ['mp3','flac','wav','aac'].includes(t.ext) ? `ext-${t.ext}` : 'ext-other';
+    const row = document.createElement('div');
+    row.className = `track-row${isActive ? ' playing' : ''}`;
+    row.style.animationDelay = `${i * 0.03}s`;
+    row.innerHTML = `
+      <div class="track-art" style="border-color:${t.color}40; background:${t.color}15">
+        <div class="playing-indicator">▶</div>
+        <span style="font-size:0.7rem;position:absolute;top:2px;left:3px;color:#67e8f9;font-weight:700">${i+1}</span>
+        ${t.emoji}
+      </div>
+      <div class="track-info">
+        <div class="track-title">${escHtml(t.name)}</div>
+        <div class="track-meta">${t.ext.toUpperCase()} · ${fmtSize(t.size)}</div>
+      </div>
+      <div class="track-right">
+        <button class="heart-btn" onclick="event.stopPropagation(); removeFromQueue('${t.id}')" title="Rimuovi dalla coda" style="color:#ff6b6b; font-size:1rem">✕</button>
+        <span class="track-ext ${extClass}">${t.ext}</span>
+      </div>`;
+    row.addEventListener('click', () => playTrack(globalIdx));
+    list.appendChild(row);
   });
 }
 
@@ -1781,6 +1980,15 @@ function togglePlay() {
 }
 
 function playNext() {
+  // If queue has tracks, play the first one
+  if (queue.length > 0) {
+    const nextId = queue[0];
+    queue.shift();
+    save();
+    renderQueue();
+    const idx = allTracks.findIndex(t => t.id === nextId);
+    if (idx !== -1) { playTrack(idx); return; }
+  }
   const available = allTracks.filter(t=>t.url!==null);
   if (available.length === 0) return;
   if (isShuffle) {
